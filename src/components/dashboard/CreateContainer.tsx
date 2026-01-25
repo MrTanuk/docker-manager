@@ -36,9 +36,13 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
           cpu_limit: cpu,
           memory_limit: memory,
           read_only_root: readOnly,
+          // --- CORRECCIÓN AQUÍ: Enviamos la ruta al backend ---
+          host_log_path: logPath,
         },
       });
       setName("");
+      // Opcional: limpiar logPath si quieres
+      // setLogPath("");
       onCreated();
     } catch (error) {
       alert("Error: " + error);
@@ -161,20 +165,32 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
         </div>
 
         <div className="space-y-3">
-          <label className={labelStyles}>
-            <FolderOpen className="w-3 h-3" /> Ruta de Logs (Host)
-          </label>
-          <input
-            type="text"
-            placeholder="Ej: C:/Users/Tu/Desktop/Logs o /home/user/logs"
-            className={inputStyles}
-            value={logPath}
-            onChange={(e) => setLogPath(e.target.value)}
-          />
-          <p className="text-[10px] text-zinc-500">
-            Si especificas una ruta, el contenedor escribirá un log de estatus
-            cada 10s en ella.
-          </p>
+          <div className="space-y-3">
+            <label className={labelStyles}>
+              <FolderOpen className="w-3 h-3" /> Ruta de Logs (Host)
+            </label>
+            <input
+              type="text"
+              placeholder={
+                readOnly
+                  ? "Deshabilitado por Read-Only FS"
+                  : "Ej: /home/usuario/logs"
+              }
+              disabled={readOnly}
+              className={`${inputStyles} ${
+                readOnly
+                  ? "opacity-50 cursor-not-allowed bg-zinc-900 text-zinc-600"
+                  : "opacity-100"
+              }`}
+              value={readOnly ? "" : logPath}
+              onChange={(e) => setLogPath(e.target.value)}
+            />
+            <p className="text-[10px] text-zinc-500">
+              {readOnly
+                ? "No se pueden escribir logs externos si el sistema de archivos es de solo lectura."
+                : "Si especificas una ruta, el contenedor escribirá un log de estatus cada 10s en ella."}
+            </p>
+          </div>
         </div>
         <button
           onClick={handleSubmit}

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Activity, ShieldAlert, Terminal, X, Check, AlertTriangle } from "lucide-react";
+import { AreaChart, Area, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Activity, ShieldAlert, X } from "lucide-react";
 
 export function MonitorModal({ id, name, onClose }: { id: string, name: string, onClose: () => void }) {
   const [data, setData] = useState<any[]>([]);

@@ -2,7 +2,7 @@ use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions, StatsOptions,
     StartContainerOptions, RestartContainerOptions, StopContainerOptions
 };
-use bollard::exec::CreateExecOptions;
+use bollard::exec::{CreateExecOptions, StartExecResults}; 
 use bollard::image::ListImagesOptions;
 use bollard::models::HostConfig;
 use bollard::Docker;
@@ -208,8 +208,10 @@ async fn perform_action(id: String, action: String) -> Result<(), String> {
 async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     let docker = connect_docker()?;
     
-    // CORRECCIÓN AQUI: Usamos strings propias (.to_string()) en el vector para evitar errores de borrowing
-    let stress_cmd = format!("timeout {} sh -c 'yes > /dev/null & yes > /dev/null & yes > /dev/null & yes > /dev/null & tail -f /dev/null'", duration);
+    let stress_cmd = format!(
+        "timeout {} sh -c 'python -c \"import time; x = \\\"a\\\" * 1024 * 1024 * 150; time.sleep({})\" & yes > /dev/null & yes > /dev/null & yes > /dev/null'", 
+        duration, duration
+    );
     
     let cmd = vec![
         "sh".to_string(), 
@@ -227,7 +229,7 @@ async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     let exec = docker.create_exec(&id, cfg).await.map_err(|e| e.to_string())?;
     docker.start_exec(&exec.id, None).await.map_err(|e| e.to_string())?;
     
-    Ok("Stress test iniciado".to_string())
+    Ok("Stress test (CPU + RAM) iniciado".to_string())
 }
 
 #[tauri::command]
@@ -251,6 +253,38 @@ async fn audit_container(id: String) -> Result<SecurityAudit, String> {
         pids_isolated: true,
         cpu_cgroup_active: host_cfg.nano_cpus.unwrap_or(0) > 0,
     })
+}
+
+#[tauri::command]
+async fn list_container_files(id: String, path: String) -> Result<Vec<String>, String> {
+    let docker = connect_docker()?;
+    
+    // Ejecutamos 'ls -1' para tener solo los nombres
+    let cmd = vec!["ls".to_string(), "-1".to_string(), path];
+    
+    let cfg = CreateExecOptions {
+        attach_stdout: Some(true),
+        cmd: Some(cmd),
+        ..Default::default()
+    };
+    
+    let exec = docker.create_exec(&id, cfg).await.map_err(|e| e.to_string())?;
+    
+    if let StartExecResults::Attached { mut output, .. } = docker.start_exec(&exec.id, None).await.map_err(|e| e.to_string())? {
+        let mut out_str = String::new();
+        while let Some(Ok(msg)) = output.next().await {
+            out_str.push_str(&msg.to_string());
+        }
+        // Separar por líneas y filtrar vacíos
+        let files: Vec<String> = out_str
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        return Ok(files);
+    }
+    
+    Err("No se pudo leer el directorio".to_string())
 }
 
 #[tauri::command]
@@ -291,7 +325,8 @@ pub fn run() {
             get_container_details,
             inject_stress,
             audit_container,
-            start_monitor
+            start_monitor,
+            list_container_files // <--- Asegúrate de que esto esté aquí
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
