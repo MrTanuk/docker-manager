@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #09090b; /* Zinc 950 */
+  --color-surface: #18181b;    /* Zinc 900 */
+  --color-border: #27272a;     /* Zinc 800 */
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-background);
+  color: #e4e4e7; /* Zinc 200 */
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+  padding: 0;
+}
+
+/* Reset para inputs y botones */
+input, button, select {
+  font-family: inherit;
+  outline: none;
+}
+
+/* Scrollbar oscura */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { @apply bg-zinc-800 rounded-full; }
+::-webkit-scrollbar-thumb:hover { @apply bg-zinc-700; }
