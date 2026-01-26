@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { 
   Cpu, HardDrive, Network, Box, Shield, Zap, 
-  FileText, Folder, RefreshCw, X, Layers, ArrowRightLeft 
+  FileText, Folder, RefreshCw, X, Layers, ArrowRightLeft, CheckCircle 
 } from "lucide-react";
 import { 
   AreaChart, Area, ResponsiveContainer, YAxis, 
@@ -32,17 +32,20 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
 
   useEffect(() => {
     if (!id) return;
+    // Reset states
     setStats([]);
     setDetails(null);
     setAudit(null);
     setNamespaceData(null);
     setFiles([]);
     
+    // Fetch initial data
     invoke("get_container_details", { id }).then(setDetails).catch(console.error);
     invoke("audit_container", { id }).then(setAudit).catch(console.error);
     invoke("get_namespace_data", { id }).then(setNamespaceData).catch(console.error);
     invoke("start_monitor", { containerId: id }).catch(console.error);
 
+    // Listen for stats
     const unlisten = listen(`monitor-stats-${id}`, (e: any) => {
       setStats(prev => [...prev, e.payload].slice(-40));
     });
@@ -260,10 +263,30 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
         {/* --- STORAGE --- */}
         {activeTab === 'storage' && (
            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
+              
+              {/* INDICADOR VISUAL DE BIND MOUNT */}
+              {details.binds && details.binds.length > 0 ? (
+                <div className="bg-emerald-500/5 border border-emerald-500/20 p-4 rounded-xl">
+                   <h4 className="text-emerald-400 font-bold text-sm flex items-center gap-2 mb-2">
+                      <CheckCircle size={16}/> Carpeta Vinculada (Bind Mount)
+                   </h4>
+                   <p className="text-xs text-zinc-400 mb-2">
+                      La carpeta de tu PC está sincronizada con <b>/app/logs</b> dentro del contenedor.
+                   </p>
+                   <div className="text-xs font-mono bg-black/30 p-2 rounded border border-emerald-500/10 text-zinc-300 break-all">
+                      {details.binds.map((b: string) => b.split(':')[0]).join(', ')} 
+                   </div>
+                </div>
+              ) : (
+                <div className="bg-zinc-800/20 border border-zinc-800 p-4 rounded-xl text-center">
+                   <p className="text-xs text-zinc-500">No hay carpetas compartidas en este contenedor.</p>
+                </div>
+              )}
+
               <div className="bg-zinc-950 border border-zinc-800 rounded-xl overflow-hidden">
                 <div className="p-3 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
                     <span className="text-xs font-bold text-zinc-300 flex items-center gap-2">
-                        <Folder size={14} className="text-blue-400"/> /app/logs
+                        <Folder size={14} className="text-blue-400"/> /app/logs (Vista Interna)
                     </span>
                     <button onClick={fetchFiles} disabled={loadingFiles} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition">
                         <RefreshCw size={14} className={loadingFiles ? "animate-spin" : ""} />
