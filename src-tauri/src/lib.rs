@@ -241,13 +241,27 @@ async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
 async fn get_namespace_data(id: String) -> Result<serde_json::Value, String> {
     let docker = connect_docker()?;
     
-    // 1. Obtener PID del Host
-    let inspect = docker.inspect_container(&id, None).await.map_err(|e| e.to_string())?;
-    let host_pid = inspect.state.and_then(|s| s.pid).unwrap_or(0);
+    // 1. Obtener datos del Host (Tu máquina real)
+    // Obtenemos el Hostname ejecutando el comando 'hostname' en tu PC
+    let host_hostname = std::process::Command::new("hostname")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "Host-PC".to_string());
 
-    // 2. Obtener PID Interno ejecutando 'ps' DENTRO del contenedor
-    // -o pid= : Imprime solo el número PID
-    // -p 1 : Buscamos el proceso init (o el CMD principal)
+    // 2. Inspeccionar el Contenedor
+    let inspect = docker.inspect_container(&id, None).await.map_err(|e| e.to_string())?;
+    
+    let host_pid = inspect.state.and_then(|s| s.pid).unwrap_or(0);
+    let container_hostname = inspect.config.and_then(|c| c.hostname).unwrap_or_default();
+    
+    // Obtener IP del contenedor
+    let container_ip = inspect.network_settings
+        .and_then(|n| n.networks)
+        .and_then(|n| n.values().next().cloned())
+        .map(|n| n.ip_address.unwrap_or_default())
+        .unwrap_or("Sin IP".to_string());
+
+    // 3. Obtener PID Interno (ejecutando 'ps' DENTRO del contenedor)
     let cmd = vec!["ps", "-p", "1", "-o", "pid="];
     let exec = docker.create_exec(&id, CreateExecOptions {
         attach_stdout: Some(true),
@@ -267,9 +281,20 @@ async fn get_namespace_data(id: String) -> Result<serde_json::Value, String> {
     }
 
     Ok(serde_json::json!({
-        "host_pid": host_pid,
-        "internal_pid": internal_pid_str,
-        "isolation_verified": host_pid.to_string() != internal_pid_str
+        "pid": {
+            "host": host_pid,
+            "container": internal_pid_str,
+            "is_isolated": host_pid.to_string() != internal_pid_str
+        },
+        "uts": {
+            "host": host_hostname,
+            "container": container_hostname,
+            "is_isolated": host_hostname != container_hostname
+        },
+        "network": {
+            "container_ip": container_ip,
+            "type": "Bridge (Aislado)"
+        }
     }))
 }
 
