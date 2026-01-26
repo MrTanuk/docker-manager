@@ -5,10 +5,12 @@ use bollard::container::{
 use bollard::exec::{CreateExecOptions, StartExecResults}; 
 use bollard::image::ListImagesOptions;
 use bollard::models::HostConfig;
+use bollard::models::PortBinding;
 use bollard::Docker;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
+use std::collections::HashMap;
 
 // --- MODELOS DE DATOS ---
 
@@ -28,6 +30,7 @@ struct CreateConfig {
     memory_limit: i64,
     read_only_root: bool,
     host_log_path: Option<String>, 
+    host_port: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -156,20 +159,30 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
     let mem_bytes = config.memory_limit * 1024 * 1024;
 
     let mut binds = Vec::new();
-    // Comando por defecto si la imagen no tiene ENTRYPOINT, 
-    // pero nuestra imagen Dockerfile ya tiene CMD, así que bollard usará ese si cmd es None o vacío.
-    // Para simplificar, dejamos que la imagen decida, a menos que necesitemos logs custom.
-    let mut cmd = None;
+    
+    // Configuración de puertos
+    let mut exposed_ports = HashMap::new();
+    let mut port_bindings = HashMap::new();
+
+    // Si el usuario pone un puerto (ej: "8080"), mapeamos 8000(container) -> 8080(host)
+    if let Some(port) = config.host_port {
+        if !port.trim().is_empty() {
+            let container_port = "8000/tcp"; // Nuestro servidor python corre en 8000
+            exposed_ports.insert(container_port.to_string(), HashMap::new());
+            
+            port_bindings.insert(
+                container_port.to_string(),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(port),
+                }]),
+            );
+        }
+    }
 
     if let Some(path) = config.host_log_path {
         if !path.trim().is_empty() {
             binds.push(format!("{}:/app/logs", path));
-            // Sobrescribimos CMD para generar logs si el usuario pidió logs
-            cmd = Some(vec![
-                "sh".to_string(), 
-                "-c".to_string(), 
-                "mkdir -p /app/logs && echo 'Iniciando...' > /app/logs/status.log && while true; do echo \"[$(date)] RUNNING\" >> /app/logs/status.log; sleep 10; done".to_string()
-            ]);
         }
     }
 
@@ -178,12 +191,15 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
         nano_cpus: Some(nano_cpus),
         readonly_rootfs: Some(config.read_only_root),
         binds: Some(binds),
+        port_bindings: Some(port_bindings),
         ..Default::default()
     };
 
     let cfg = Config {
         image: Some(config.image),
-        cmd,
+        // No sobrescribimos CMD para que corra el python server del Dockerfile
+        // cmd: ..., 
+        exposed_ports: Some(exposed_ports), // <--- AÑADIDO
         host_config: Some(host_config),
         tty: Some(true),
         ..Default::default()

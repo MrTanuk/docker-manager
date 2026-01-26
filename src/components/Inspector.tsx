@@ -196,6 +196,19 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                     <p className="text-xs text-zinc-300">
                         Cada contenedor opera como una instancia aislada. A continuación se verifican las 4 capas principales de aislamiento.
                     </p>
+
+                    {/* BOTÓN NUEVO PARA ABRIR WEB */}
+                    <a 
+                      href="http://localhost:8080" 
+                      target="_blank" 
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-blue-600/20"
+                    >
+                       <Globe size={14} /> ABRIR WEB DEL CONTENEDOR (Prueba Visual)
+                    </a>
+                    <p className="text-[10px] text-zinc-500 mt-2">
+                       *Asegúrate de haber usado el puerto 8080 al crear el contenedor.
+                    </p>
                 </div>
 
                 {namespaceData ? (
