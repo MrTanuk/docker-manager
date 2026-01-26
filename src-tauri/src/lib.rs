@@ -2,7 +2,7 @@ use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions, StatsOptions,
     StartContainerOptions, RestartContainerOptions, StopContainerOptions
 };
-use bollard::exec::{CreateExecOptions, StartExecResults}; 
+use bollard::exec::{CreateExecOptions, StartExecResults, StartExecOptions}; 
 use bollard::image::ListImagesOptions;
 use bollard::models::HostConfig;
 use bollard::models::PortBinding;
@@ -163,14 +163,12 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
 
     let mut binds = Vec::new();
     
-    // Configuración de puertos
     let mut exposed_ports = HashMap::new();
     let mut port_bindings = HashMap::new();
 
-    // Si el usuario pone un puerto (ej: "8080"), mapeamos 8000(container) -> 8080(host)
     if let Some(port) = config.host_port {
         if !port.trim().is_empty() {
-            let container_port = "8000/tcp"; // Nuestro servidor python corre en 8000
+            let container_port = "8000/tcp";
             exposed_ports.insert(container_port.to_string(), HashMap::new());
             
             port_bindings.insert(
@@ -200,9 +198,7 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
 
     let cfg = Config {
         image: Some(config.image),
-        // No sobrescribimos CMD para que corra el python server del Dockerfile
-        // cmd: ..., 
-        exposed_ports: Some(exposed_ports), // <--- AÑADIDO
+        exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
         tty: Some(true),
         ..Default::default()
@@ -231,27 +227,36 @@ async fn perform_action(id: String, action: String) -> Result<(), String> {
 async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     let docker = connect_docker()?;
     
-    // stress-ng: 
-    // --cpu 4: Intenta usar 4 cores (para saturar si el límite es < 4)
-    // --vm 2: Dos procesos de memoria
-    // --vm-bytes 2G: Intenta alocar 2GB (para saturar si el límite es < 2GB)
+    // CORRECCIÓN IMPORTANTE:
+    // 1. Usamos '--vm-bytes 90%' en lugar de '2G'. Esto se adapta al límite del contenedor
+    //    (ej. si el límite es 512MB, usará ~460MB) sin causar un crash inmediato.
+    // 2. Usamos '--cpu 0' para estresar todos los cores disponibles.
     let cmd = vec![
         "stress-ng".to_string(),
-        "--cpu".to_string(), "4".to_string(), 
+        "--cpu".to_string(), "0".to_string(), 
         "--vm".to_string(), "2".to_string(),
-        "--vm-bytes".to_string(), "2G".to_string(), 
+        "--vm-bytes".to_string(), "90%".to_string(), 
         "--timeout".to_string(), format!("{}s", duration)
     ];
 
+    // CORRECCIÓN: Ejecutamos en modo Detached (segundo plano) y sin TTY
+    // para asegurar que el comando siga corriendo aunque Rust deje de mirar.
     let cfg = CreateExecOptions {
-        attach_stdout: Some(true),
-        attach_stderr: Some(true),
+        attach_stdout: Some(false),
+        attach_stderr: Some(false),
         cmd: Some(cmd), 
         ..Default::default()
     };
     
     let exec = docker.create_exec(&id, cfg).await.map_err(|e| e.to_string())?;
-    docker.start_exec(&exec.id, None).await.map_err(|e| e.to_string())?;
+    
+    // Start con detach: true
+    let start_opts = StartExecOptions {
+        detach: true,
+        ..Default::default()
+    };
+
+    docker.start_exec(&exec.id, Some(start_opts)).await.map_err(|e| e.to_string())?;
     
     Ok("Inyectando carga masiva con stress-ng...".to_string())
 }
@@ -260,27 +265,22 @@ async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
 async fn get_namespace_data(id: String) -> Result<serde_json::Value, String> {
     let docker = connect_docker()?;
     
-    // 1. Obtener datos del Host (Tu máquina real)
-    // Obtenemos el Hostname ejecutando el comando 'hostname' en tu PC
     let host_hostname = std::process::Command::new("hostname")
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "Host-PC".to_string());
 
-    // 2. Inspeccionar el Contenedor
     let inspect = docker.inspect_container(&id, None).await.map_err(|e| e.to_string())?;
     
     let host_pid = inspect.state.and_then(|s| s.pid).unwrap_or(0);
     let container_hostname = inspect.config.and_then(|c| c.hostname).unwrap_or_default();
     
-    // Obtener IP del contenedor
     let container_ip = inspect.network_settings
         .and_then(|n| n.networks)
         .and_then(|n| n.values().next().cloned())
         .map(|n| n.ip_address.unwrap_or_default())
         .unwrap_or("Sin IP".to_string());
 
-    // 3. Obtener PID Interno (ejecutando 'ps' DENTRO del contenedor)
     let cmd = vec!["ps", "-p", "1", "-o", "pid="];
     let exec = docker.create_exec(&id, CreateExecOptions {
         attach_stdout: Some(true),
@@ -321,7 +321,6 @@ async fn get_namespace_data(id: String) -> Result<serde_json::Value, String> {
 async fn audit_container(id: String) -> Result<SecurityAudit, String> {
     let docker = connect_docker()?;
     
-    // Verificar ReadOnly intentando escribir
     let fs_check_cfg = CreateExecOptions {
         attach_stdout: Some(true),
         cmd: Some(vec!["touch".to_string(), "/root/security_check".to_string()]), 
@@ -397,36 +396,27 @@ async fn start_monitor(app: AppHandle, container_id: String) -> Result<(), Strin
 
 #[tauri::command]
 async fn open_dashboard_terminal(id: String) -> Result<u16, String> {
-    // 1. Encontrar un puerto libre dinámicamente
     let port = {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         listener.local_addr().map_err(|e| e.to_string())?.port()
-    }; // El listener se cierra aquí y libera el puerto
+    }; 
 
-    // 2. Ejecutar ttyd apuntando al contenedor
-    // Comando: ttyd -p <PORT> -W docker exec -it <ID> /bin/bash
-    // -W: Permite escribir en la terminal
-    // -o: Abre el navegador (no lo queremos aquí, lo abrimos en React)
-    
-    // NOTA: Usamos spawn para que corra en fondo. 
-    // En un app real deberíamos guardar el PID para matarlo luego, 
-    // pero para este demo está bien así.
     Command::new("ttyd")
         .args(&[
             "-p", &port.to_string(),
-            "-W", // Writable
+            "-W", 
             "docker", "exec", "-it", &id, "/bin/bash"
         ])
-        .stdout(Stdio::null()) // No ensuciar logs
+        .stdout(Stdio::null()) 
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| "Error al iniciar ttyd. ¿Tienes 'ttyd' instalado en tu PC?".to_string())?;
 
-    // Damos un pequeño respiro para que ttyd arranque
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     Ok(port)
 }
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
