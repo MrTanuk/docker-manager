@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { 
   Cpu, HardDrive, Network, Box, Shield, Zap, 
   FileText, Folder, RefreshCw, X, Layers, ArrowRightLeft, CheckCircle, 
-  Globe, Server, MessageSquare, Lock
+  Globe, Server, MessageSquare, Lock, Terminal
 } from "lucide-react";
 import { 
   AreaChart, Area, ResponsiveContainer, YAxis, 
@@ -30,6 +30,8 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
   const [namespaceData, setNamespaceData] = useState<any>(null);
   const [files, setFiles] = useState<string[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  const [terminalPort, setTerminalPort] = useState<number | null>(null);
+  const [openingTerminal, setOpeningTerminal] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -81,6 +83,20 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
 
   const memoryLimitMB = details.memory_limit_bytes > 0 ? details.memory_limit_bytes / 1024 / 1024 : 0;
   const cpuLimitPercent = details.cpu_limit_nano > 0 ? (details.cpu_limit_nano / 1_000_000_000) * 100 : 100;
+
+  const handleOpenTerminal = async () => {
+      if (!id) return;
+      setOpeningTerminal(true);
+      try {
+          const port = await invoke<number>("open_dashboard_terminal", { id });
+          setTerminalPort(port);
+      } catch (error) {
+          console.error(error);
+          alert("Error: " + error);
+      } finally {
+          setOpeningTerminal(false);
+      }
+  };
 
   return (
     <div className="h-full flex flex-col bg-zinc-900/80 rounded-2xl border border-zinc-800 backdrop-blur-xl shadow-2xl relative">
@@ -189,27 +205,30 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
         )}
 
         {/* --- NAMESPACES (AISLAMIENTO COMPLETO) --- */}
-        {activeTab === 'namespaces' && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
-                <div className="bg-purple-600/10 border border-purple-500/20 p-4 rounded-xl">
-                    <h3 className="text-purple-400 font-bold text-sm mb-1 flex gap-2"><Box size={16}/> Aislamiento por Namespaces (Linux Kernel)</h3>
-                    <p className="text-xs text-zinc-300">
-                        Cada contenedor opera como una instancia aislada. A continuación se verifican las 4 capas principales de aislamiento.
-                    </p>
+{activeTab === 'namespaces' && (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
+        {/* ... (Tarjeta de título y explicación existente) ... */}
+        
+        <div className="bg-purple-600/10 border border-purple-500/20 p-4 rounded-xl">
+             {/* ... Títulos anteriores ... */}
+             
+             <div className="flex flex-wrap gap-3 mt-4">
+                {/* BOTÓN WEB (Existente) */}
+                <a href="http://localhost:8080" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-blue-600/20">
+                   <Globe size={14} /> ABRIR WEB (Server)
+                </a>
 
-                    {/* BOTÓN NUEVO PARA ABRIR WEB */}
-                    <a 
-                      href="http://localhost:8080" 
-                      target="_blank" 
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-blue-600/20"
-                    >
-                       <Globe size={14} /> ABRIR WEB DEL CONTENEDOR (Prueba Visual)
-                    </a>
-                    <p className="text-[10px] text-zinc-500 mt-2">
-                       *Asegúrate de haber usado el puerto 8080 al crear el contenedor.
-                    </p>
-                </div>
+                {/* BOTÓN TERMINAL (NUEVO) */}
+                <button 
+                    onClick={handleOpenTerminal}
+                    disabled={openingTerminal}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded-lg transition border border-zinc-600"
+                >
+                   <Terminal size={14} /> 
+                   {openingTerminal ? "Conectando..." : "ABRIR SHELL (TTY)"}
+                </button>
+             </div>
+        </div>
 
                 {namespaceData ? (
                     <div className="grid grid-cols-2 gap-4">
@@ -337,6 +356,32 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
         )}
 
       </div>
+
+      {/* --- MODAL DE TERMINAL (ESTO ES LO QUE FALTABA) --- */}
+      {terminalPort && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-10">
+            <div className="bg-zinc-900 w-full h-full max-w-5xl rounded-xl border border-zinc-700 shadow-2xl flex flex-col overflow-hidden">
+                <div className="h-10 bg-zinc-950 border-b border-zinc-800 flex items-center justify-between px-4">
+                    <div className="flex items-center gap-2 text-sm font-mono text-zinc-400">
+                        <Terminal size={14} className="text-green-500" />
+                        <span>root@{details?.name?.substring(0,12) || "container"}:/app#</span>
+                    </div>
+                    <button onClick={() => setTerminalPort(null)} className="hover:text-white text-zinc-500 hover:bg-zinc-800 p-1 rounded transition">
+                        <X size={18} />
+                    </button>
+                </div>
+                <div className="flex-1 bg-black relative">
+                    <iframe 
+                        src={`http://localhost:${terminalPort}`}
+                        className="w-full h-full border-none"
+                        title="Terminal"
+                        allow="clipboard-read; clipboard-write"
+                    />
+                </div>
+            </div>
+        </div>
+      )}
+
     </div>
   );
 }

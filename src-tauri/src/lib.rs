@@ -11,6 +11,9 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use std::collections::HashMap;
+use std::net::TcpListener;
+use std::process::{Command, Stdio};
+
 
 // --- MODELOS DE DATOS ---
 
@@ -392,6 +395,38 @@ async fn start_monitor(app: AppHandle, container_id: String) -> Result<(), Strin
     Ok(())
 }
 
+#[tauri::command]
+async fn open_dashboard_terminal(id: String) -> Result<u16, String> {
+    // 1. Encontrar un puerto libre dinámicamente
+    let port = {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        listener.local_addr().map_err(|e| e.to_string())?.port()
+    }; // El listener se cierra aquí y libera el puerto
+
+    // 2. Ejecutar ttyd apuntando al contenedor
+    // Comando: ttyd -p <PORT> -W docker exec -it <ID> /bin/bash
+    // -W: Permite escribir en la terminal
+    // -o: Abre el navegador (no lo queremos aquí, lo abrimos en React)
+    
+    // NOTA: Usamos spawn para que corra en fondo. 
+    // En un app real deberíamos guardar el PID para matarlo luego, 
+    // pero para este demo está bien así.
+    Command::new("ttyd")
+        .args(&[
+            "-p", &port.to_string(),
+            "-W", // Writable
+            "docker", "exec", "-it", &id, "/bin/bash"
+        ])
+        .stdout(Stdio::null()) // No ensuciar logs
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Error al iniciar ttyd. ¿Tienes 'ttyd' instalado en tu PC?".to_string())?;
+
+    // Damos un pequeño respiro para que ttyd arranque
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    Ok(port)
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -406,7 +441,8 @@ pub fn run() {
             audit_container,
             start_monitor,
             list_container_files,
-            get_namespace_data
+            get_namespace_data,
+            open_dashboard_terminal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
