@@ -156,16 +156,20 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
     let mem_bytes = config.memory_limit * 1024 * 1024;
 
     let mut binds = Vec::new();
-    let mut cmd = vec!["tail".to_string(), "-f".to_string(), "/dev/null".to_string()];
+    // Comando por defecto si la imagen no tiene ENTRYPOINT, 
+    // pero nuestra imagen Dockerfile ya tiene CMD, así que bollard usará ese si cmd es None o vacío.
+    // Para simplificar, dejamos que la imagen decida, a menos que necesitemos logs custom.
+    let mut cmd = None;
 
     if let Some(path) = config.host_log_path {
         if !path.trim().is_empty() {
             binds.push(format!("{}:/app/logs", path));
-            cmd = vec![
+            // Sobrescribimos CMD para generar logs si el usuario pidió logs
+            cmd = Some(vec![
                 "sh".to_string(), 
                 "-c".to_string(), 
-                "mkdir -p /app/logs && echo 'Iniciando contenedor...' > /app/logs/status.log && while true; do echo \"[$(date)] RUNNING - Mem: $(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)\" >> /app/logs/status.log; sleep 5; done".to_string()
-            ];
+                "mkdir -p /app/logs && echo 'Iniciando...' > /app/logs/status.log && while true; do echo \"[$(date)] RUNNING\" >> /app/logs/status.log; sleep 10; done".to_string()
+            ]);
         }
     }
 
@@ -179,7 +183,7 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
 
     let cfg = Config {
         image: Some(config.image),
-        cmd: Some(cmd),
+        cmd,
         host_config: Some(host_config),
         tty: Some(true),
         ..Default::default()
@@ -208,15 +212,16 @@ async fn perform_action(id: String, action: String) -> Result<(), String> {
 async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     let docker = connect_docker()?;
     
-    let stress_cmd = format!(
-        "timeout {} sh -c 'python -c \"import time; x = \\\"a\\\" * 1024 * 1024 * 150; time.sleep({})\" & yes > /dev/null & yes > /dev/null & yes > /dev/null'", 
-        duration, duration
-    );
-    
+    // stress-ng: 
+    // --cpu 4: Intenta usar 4 cores (para saturar si el límite es < 4)
+    // --vm 2: Dos procesos de memoria
+    // --vm-bytes 2G: Intenta alocar 2GB (para saturar si el límite es < 2GB)
     let cmd = vec![
-        "sh".to_string(), 
-        "-c".to_string(), 
-        stress_cmd
+        "stress-ng".to_string(),
+        "--cpu".to_string(), "4".to_string(), 
+        "--vm".to_string(), "2".to_string(),
+        "--vm-bytes".to_string(), "2G".to_string(), 
+        "--timeout".to_string(), format!("{}s", duration)
     ];
 
     let cfg = CreateExecOptions {
@@ -229,7 +234,43 @@ async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     let exec = docker.create_exec(&id, cfg).await.map_err(|e| e.to_string())?;
     docker.start_exec(&exec.id, None).await.map_err(|e| e.to_string())?;
     
-    Ok("Stress test (CPU + RAM) iniciado".to_string())
+    Ok("Inyectando carga masiva con stress-ng...".to_string())
+}
+
+#[tauri::command]
+async fn get_namespace_data(id: String) -> Result<serde_json::Value, String> {
+    let docker = connect_docker()?;
+    
+    // 1. Obtener PID del Host
+    let inspect = docker.inspect_container(&id, None).await.map_err(|e| e.to_string())?;
+    let host_pid = inspect.state.and_then(|s| s.pid).unwrap_or(0);
+
+    // 2. Obtener PID Interno ejecutando 'ps' DENTRO del contenedor
+    // -o pid= : Imprime solo el número PID
+    // -p 1 : Buscamos el proceso init (o el CMD principal)
+    let cmd = vec!["ps", "-p", "1", "-o", "pid="];
+    let exec = docker.create_exec(&id, CreateExecOptions {
+        attach_stdout: Some(true),
+        cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+        ..Default::default()
+    }).await.map_err(|e| e.to_string())?;
+
+    let mut internal_pid_str = "Unknown".to_string();
+    
+    if let StartExecResults::Attached { mut output, .. } = docker.start_exec(&exec.id, None).await.map_err(|e| e.to_string())? {
+        while let Some(Ok(msg)) = output.next().await {
+            let s = msg.to_string().trim().to_string();
+            if !s.is_empty() {
+                internal_pid_str = s;
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "host_pid": host_pid,
+        "internal_pid": internal_pid_str,
+        "isolation_verified": host_pid.to_string() != internal_pid_str
+    }))
 }
 
 #[tauri::command]
@@ -259,9 +300,7 @@ async fn audit_container(id: String) -> Result<SecurityAudit, String> {
 async fn list_container_files(id: String, path: String) -> Result<Vec<String>, String> {
     let docker = connect_docker()?;
     
-    // Ejecutamos 'ls -1' para tener solo los nombres
     let cmd = vec!["ls".to_string(), "-1".to_string(), path];
-    
     let cfg = CreateExecOptions {
         attach_stdout: Some(true),
         cmd: Some(cmd),
@@ -275,7 +314,6 @@ async fn list_container_files(id: String, path: String) -> Result<Vec<String>, S
         while let Some(Ok(msg)) = output.next().await {
             out_str.push_str(&msg.to_string());
         }
-        // Separar por líneas y filtrar vacíos
         let files: Vec<String> = out_str
             .lines()
             .map(|s| s.trim().to_string())
@@ -326,7 +364,8 @@ pub fn run() {
             inject_stress,
             audit_container,
             start_monitor,
-            list_container_files // <--- Asegúrate de que esto esté aquí
+            list_container_files,
+            get_namespace_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
