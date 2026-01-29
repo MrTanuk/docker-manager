@@ -11,6 +11,7 @@ import {
   Plus,
   Trash2,
   List,
+  Network
 } from "lucide-react";
 
 interface CreateContainerProps {
@@ -32,6 +33,8 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
   const [loading, setLoading] = useState(false);
   const [logPath, setLogPath] = useState("");
   const [port, setPort] = useState("8080");
+  
+  const [exposePort, setExposePort] = useState(true);
 
   const [envVars, setEnvVars] = useState<EnvVar[]>([]);
 
@@ -75,14 +78,13 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
           memory_limit: memory,
           read_only_root: readOnly,
           host_log_path: logPath,
-          host_port: port,
+          host_port: exposePort ? port : "", 
           env_vars: formattedEnv,
         },
       });
 
-      // Reset del formulario
       setName("");
-      setEnvVars([]); // Limpiamos env vars
+      setEnvVars([]);
       onCreated();
     } catch (error) {
       alert("Error: " + error);
@@ -142,7 +144,7 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
           </div>
         </div>
 
-        {/* Sección Variables de Entorno */}
+        {/* Variables de Entorno (sin cambios) */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className={labelStyles}>
@@ -161,7 +163,7 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
               <div key={idx} className="flex gap-2">
                 <input
                   type="text"
-                  placeholder="CLAVE (ej. MYSQL_ROOT_PASSWORD)"
+                  placeholder="CLAVE"
                   className={`${inputStyles} flex-1 text-xs`}
                   value={env.key}
                   onChange={(e) => updateEnvVar(idx, "key", e.target.value)}
@@ -181,17 +183,12 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
                 </button>
               </div>
             ))}
-            {envVars.length === 0 && (
-              <div className="text-center p-3 border border-dashed border-zinc-800 rounded-lg text-xs text-zinc-600">
-                Sin variables configuradas
-              </div>
-            )}
           </div>
         </div>
 
         <div className="h-px bg-zinc-800" />
 
-        {/* Recursos */}
+        {/* Recursos (sin cambios) */}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <div className="flex justify-between mb-2">
@@ -225,40 +222,46 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
           </div>
         </div>
 
-        {/* Read Only Toggle */}
-        <div
-          className="flex items-center justify-between p-2.5 bg-zinc-950 border border-zinc-800 rounded-lg cursor-pointer"
-          onClick={() => setReadOnly(!readOnly)}
-        >
-          <span className="text-xs font-medium flex items-center gap-2">
-            <Lock
-              className={`w-3 h-3 ${readOnly ? "text-orange-500" : "text-zinc-500"}`}
-            />{" "}
-            Read-Only FS
-          </span>
-          <div
-            className={`w-7 h-4 rounded-full p-0.5 transition-colors ${readOnly ? "bg-orange-600" : "bg-zinc-700"}`}
-          >
+        {/* --- 4. NUEVOS TOGGLES (PUERTO Y READ-ONLY) --- */}
+        <div className="grid grid-cols-2 gap-3">
+            {/* Toggle Read Only */}
             <div
-              className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${readOnly ? "translate-x-3" : ""}`}
-            />
-          </div>
+            className="flex flex-col justify-between p-2.5 bg-zinc-950 border border-zinc-800 rounded-lg cursor-pointer h-full"
+            onClick={() => setReadOnly(!readOnly)}
+            >
+                <div className="flex justify-between items-start mb-2">
+                    <span className="text-xs font-medium flex items-center gap-2 text-zinc-400">
+                        <Lock className={`w-3 h-3 ${readOnly ? "text-orange-500" : ""}`} />
+                        FS Read-Only
+                    </span>
+                    <div className={`w-6 h-3 rounded-full p-0.5 transition-colors ${readOnly ? "bg-orange-600" : "bg-zinc-700"}`}>
+                        <div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${readOnly ? "translate-x-3" : ""}`} />
+                    </div>
+                </div>
+                <p className="text-[10px] text-zinc-600 leading-tight">Sistema de archivos inmutable.</p>
+            </div>
+
+            {/* Toggle Puerto (Expose Port) */}
+            <div
+            className="flex flex-col justify-between p-2.5 bg-zinc-950 border border-zinc-800 rounded-lg cursor-pointer h-full"
+            onClick={() => setExposePort(!exposePort)}
+            >
+                <div className="flex justify-between items-start mb-2">
+                    <span className="text-xs font-medium flex items-center gap-2 text-zinc-400">
+                        <Network className={`w-3 h-3 ${exposePort ? "text-blue-500" : ""}`} />
+                        Exponer Red
+                    </span>
+                    <div className={`w-6 h-3 rounded-full p-0.5 transition-colors ${exposePort ? "bg-blue-600" : "bg-zinc-700"}`}>
+                        <div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${exposePort ? "translate-x-3" : ""}`} />
+                    </div>
+                </div>
+                <p className="text-[10px] text-zinc-600 leading-tight">Mapear puertos al host local.</p>
+            </div>
         </div>
 
-        {/* Logs y Puerto */}
+        {/* Logs y Puerto Input */}
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className={labelStyles}>
-              <Globe className="w-3 h-3" /> Puerto Host
-            </label>
-            <input
-              type="text"
-              placeholder="8080"
-              className={inputStyles}
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-            />
-          </div>
+          {/* Input Condicional del Puerto */}
           <div>
             <label className={labelStyles}>
               <FolderOpen className="w-3 h-3" /> Ruta Logs (Host)
@@ -270,6 +273,19 @@ export function CreateContainer({ onCreated }: CreateContainerProps) {
               className={`${inputStyles} ${readOnly ? "opacity-50" : ""}`}
               value={logPath}
               onChange={(e) => setLogPath(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className={`${labelStyles} ${!exposePort ? 'opacity-50' : ''}`}>
+              <Globe className="w-3 h-3" /> Puerto Host
+            </label>
+            <input
+              type="text"
+              placeholder="8080"
+              className={`${inputStyles} ${!exposePort ? 'opacity-50 cursor-not-allowed bg-zinc-900' : ''}`}
+              value={port}
+              disabled={!exposePort}
+              onChange={(e) => setPort(e.target.value)}
             />
           </div>
         </div>

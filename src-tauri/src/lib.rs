@@ -9,16 +9,21 @@ use bollard::models::PortBinding;
 use bollard::Docker;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
-use tauri::{State};
+use tauri::{AppHandle, Emitter, State};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::process::Child;
 use std::net::TcpListener;
-use std::process::{Command, Stdio};
-
+use std::process::{Command, Stdio, Child};
+use std::sync::Mutex;
 
 // --- MODELOS DE DATOS ---
+
+struct MonitorState {
+    handles: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
+}
+
+struct TerminalState {
+    processes: Mutex<HashMap<String, Child>>,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ContainerInfo {
@@ -62,23 +67,16 @@ struct ContainerDetails {
     image: String,
     state: String,
     created: String,
-    // Namespaces / Kernel Info
     pid_host: i64,
     platform: String,
     driver: String,
-    // Red
     ip_address: String,
     mac_address: String,
-    // Recursos
     cpu_limit_nano: i64,
     memory_limit_bytes: i64,
-    // Storage
     binds: Vec<String>,
-}
-
-#[derive(Debug)]
-struct TerminalState {
-    processes: Mutex<HashMap<String, Child>>,
+    ports: Vec<String>,
+    env: Vec<String>,
 }
 
 // --- CONEXIÓN A DOCKER ---
@@ -123,14 +121,32 @@ async fn get_container_details(id: String) -> Result<ContainerDetails, String> {
     let inspect = docker.inspect_container(&id, None).await.map_err(|e| e.to_string())?;
 
     let state = inspect.state.unwrap_or_default();
-    let config = inspect.config.unwrap_or_default();
-    let host_config = inspect.host_config.unwrap_or_default();
-    let network = inspect.network_settings.unwrap_or_default();
+    
+    let config = inspect.config.clone().unwrap_or_default();
+    let host_config = inspect.host_config.clone().unwrap_or_default();
+    let network = inspect.network_settings.clone().unwrap_or_default();
     
     let status_str = state.status.map(|s| s.to_string()).unwrap_or_else(|| "unknown".to_string());
 
     let ip = network.networks.unwrap_or_default().values().next()
         .map(|n| n.ip_address.clone().unwrap_or_default()).unwrap_or_default();
+
+    let mut ports_list = Vec::new();
+    if let Some(ports) = inspect.network_settings.as_ref().and_then(|n| n.ports.as_ref()) {
+        for (internal, bindings) in ports {
+            if let Some(bindings) = bindings {
+                for b in bindings {
+                    let host_p = b.host_port.clone().unwrap_or_default();
+                    ports_list.push(format!("{} -> {}", host_p, internal));
+                }
+            }
+        }
+    }
+
+    // Lógica de Env Vars
+    let env_vars = inspect.config.as_ref()
+        .and_then(|c| c.env.clone())
+        .unwrap_or_default();
 
     Ok(ContainerDetails {
         id: inspect.id.unwrap_or_default(),
@@ -146,6 +162,8 @@ async fn get_container_details(id: String) -> Result<ContainerDetails, String> {
         cpu_limit_nano: host_config.nano_cpus.unwrap_or(0),
         memory_limit_bytes: host_config.memory.unwrap_or(0),
         binds: host_config.binds.unwrap_or(Vec::new()),
+        ports: ports_list,
+        env: env_vars,
     })
 }
 
@@ -210,13 +228,46 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
         tty: Some(true),
-        env: config.env_vars, 
+        env: config.env_vars,
         ..Default::default()
     };
 
     let opts = CreateContainerOptions { name: config.name, platform: None };
     let res = docker.create_container(Some(opts), cfg).await.map_err(|e| e.to_string())?;
     docker.start_container(&res.id, None::<StartContainerOptions<String>>).await.map_err(|e| e.to_string())?;
+    Ok(res.id)
+}
+
+#[tauri::command]
+async fn update_container_env(id: String, new_env: Vec<String>) -> Result<String, String> {
+    let docker = connect_docker()?;
+
+    let inspect = docker.inspect_container(&id, None).await.map_err(|e| e.to_string())?;
+    
+    let old_config = inspect.config.ok_or("No config found")?;
+    let old_host_config = inspect.host_config.ok_or("No host config found")?;
+    let name = inspect.name.ok_or("No name found")?.replace("/", ""); 
+
+    let new_container_config = Config {
+        image: old_config.image,
+        cmd: old_config.cmd,
+        env: Some(new_env),
+        exposed_ports: old_config.exposed_ports,
+        host_config: Some(old_host_config),
+        tty: old_config.tty,
+        attach_stdout: old_config.attach_stdout,
+        attach_stderr: old_config.attach_stderr,
+        open_stdin: old_config.open_stdin,
+        ..Default::default()
+    };
+    docker.stop_container(&id, None::<StopContainerOptions>).await.map_err(|e| e.to_string())?;
+    docker.remove_container(&id, None::<RemoveContainerOptions>).await.map_err(|e| e.to_string())?;
+
+    let opts = CreateContainerOptions { name: name, platform: None };
+    let res = docker.create_container(Some(opts), new_container_config).await.map_err(|e| e.to_string())?;
+
+    docker.start_container(&res.id, None::<StartContainerOptions<String>>).await.map_err(|e| e.to_string())?;
+
     Ok(res.id)
 }
 
@@ -237,10 +288,6 @@ async fn perform_action(id: String, action: String) -> Result<(), String> {
 async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     let docker = connect_docker()?;
     
-    // CORRECCIÓN IMPORTANTE:
-    // 1. Usamos '--vm-bytes 90%' en lugar de '2G'. Esto se adapta al límite del contenedor
-    //    (ej. si el límite es 512MB, usará ~460MB) sin causar un crash inmediato.
-    // 2. Usamos '--cpu 0' para estresar todos los cores disponibles.
     let cmd = vec![
         "stress-ng".to_string(),
         "--cpu".to_string(), "0".to_string(), 
@@ -249,8 +296,6 @@ async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
         "--timeout".to_string(), format!("{}s", duration)
     ];
 
-    // CORRECCIÓN: Ejecutamos en modo Detached (segundo plano) y sin TTY
-    // para asegurar que el comando siga corriendo aunque Rust deje de mirar.
     let cfg = CreateExecOptions {
         attach_stdout: Some(false),
         attach_stderr: Some(false),
@@ -260,7 +305,6 @@ async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     
     let exec = docker.create_exec(&id, cfg).await.map_err(|e| e.to_string())?;
     
-    // Start con detach: true
     let start_opts = StartExecOptions {
         detach: true,
         ..Default::default()
@@ -379,10 +423,25 @@ async fn list_container_files(id: String, path: String) -> Result<Vec<String>, S
 }
 
 #[tauri::command]
-async fn start_monitor(app: AppHandle, container_id: String) -> Result<(), String> {
+async fn start_monitor(
+    app: AppHandle, 
+    state: State<'_, MonitorState>, 
+    container_id: String
+) -> Result<(), String> {
+    {
+        let map = state.handles.lock().map_err(|_| "Lock error")?;
+        if map.contains_key(&container_id) {
+            return Ok(()); 
+        }
+    }
+
     let docker = connect_docker()?;
-    tauri::async_runtime::spawn(async move {
-        let mut stream = docker.stats(&container_id, Some(StatsOptions { stream: true, ..Default::default() }));
+    
+    let id_for_task = container_id.clone();
+
+    let handle = tauri::async_runtime::spawn(async move {
+        let mut stream = docker.stats(&id_for_task, Some(StatsOptions { stream: true, ..Default::default() }));
+        
         while let Some(Ok(stats)) = stream.next().await {
             let cpu_delta = stats.cpu_stats.cpu_usage.total_usage as f64 - stats.precpu_stats.cpu_usage.total_usage as f64;
             let sys_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0) as f64 - stats.precpu_stats.system_cpu_usage.unwrap_or(0) as f64;
@@ -398,9 +457,26 @@ async fn start_monitor(app: AppHandle, container_id: String) -> Result<(), Strin
                 memory_percent: (mem_use / mem_lim * 100.0).round() / 100.0,
                 time: chrono::Local::now().format("%H:%M:%S").to_string(),
             };
-            if let Err(_) = app.emit(&format!("monitor-stats-{}", container_id), payload) { break; }
+
+            if let Err(_) = app.emit(&format!("monitor-stats-{}", id_for_task), payload) { break; }
         }
     });
+
+    let mut map = state.handles.lock().map_err(|_| "Lock error")?;
+    map.insert(container_id, handle);
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_monitor(
+    state: State<'_, MonitorState>, 
+    container_id: String
+) -> Result<(), String> {
+    let mut map = state.handles.lock().map_err(|_| "Lock error")?;
+    if let Some(handle) = map.remove(&container_id) {
+        handle.abort();
+    }
     Ok(())
 }
 
@@ -408,9 +484,14 @@ async fn start_monitor(app: AppHandle, container_id: String) -> Result<(), Strin
 async fn open_dashboard_terminal(
     state: State<'_, TerminalState>, 
     id: String
-    ) -> Result<u16, String> {
+) -> Result<u16, String> {
+    
+    if Command::new("ttyd").arg("--version").output().is_err() {
+        return Err("Error: 'ttyd' no está instalado o no se encuentra en el PATH.".to_string());
+    }
 
-    close_dashboard_terminal(state.clone(), id.clone()).await?;
+    // Primero, verificamos si ya hay una terminal abierta para este contenedor y la matamos
+    let _ = close_dashboard_terminal(state.clone(), id.clone()).await;
 
     let port = {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -419,20 +500,20 @@ async fn open_dashboard_terminal(
 
     let child = Command::new("ttyd")
         .args(&[
-            "-i", "127.0.0.1",
+            "-i", "127.0.0.1", 
             "-p", &port.to_string(),
             "-W", 
             "docker", "exec", "-it", &id, "/bin/bash"
         ])
-        .stdout(Stdio::null()) 
+        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| "Error al iniciar ttyd. ¿Tienes 'ttyd' instalado en tu PC?".to_string())?;
+        .map_err(|_| "Error lanzando ttyd")?;
 
-    state.processes.lock().map_err(|_| "Lock error")?.insert(id, child);
+    state.processes.lock().map_err(|_| "Lock error")?
+        .insert(id, child);
 
     std::thread::sleep(std::time::Duration::from_millis(500));
-
     Ok(port)
 }
 
@@ -444,9 +525,7 @@ async fn close_dashboard_terminal(
     let mut processes = state.processes.lock().map_err(|_| "Lock error")?;
     
     if let Some(mut child) = processes.remove(&id) {
-        // Intentamos matar el proceso suavemente, si no, a la fuerza
         let _ = child.kill(); 
-        // Esperamos a que el SO limpie el recurso
         let _ = child.wait();
     }
     Ok(())
@@ -455,8 +534,12 @@ async fn close_dashboard_terminal(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init()).manage(TerminalState {
+        .plugin(tauri_plugin_opener::init())
+        .manage(TerminalState { 
             processes: Mutex::new(HashMap::new()) 
+        })
+        .manage(MonitorState { 
+            handles: Mutex::new(HashMap::new()) 
         })
         .invoke_handler(tauri::generate_handler![
             get_containers, 
@@ -467,10 +550,12 @@ pub fn run() {
             inject_stress,
             audit_container,
             start_monitor,
+            stop_monitor,
             list_container_files,
             get_namespace_data,
             open_dashboard_terminal,
             close_dashboard_terminal,
+            update_container_env
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

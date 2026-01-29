@@ -12,7 +12,10 @@ export function MonitorModal({ id, name, onClose }: { id: string, name: string, 
     const unlisten = listen(`monitor-stats-${id}`, (e: any) => {
       setData(prev => [...prev, { ...e.payload, time: "" }].slice(-30));
     });
-    return () => { unlisten.then(f => f()); };
+    return () => {
+      unlisten.then(f => f());
+      invoke("stop_monitor", { containerId: id }).catch(console.error);
+    };
   }, [id]);
 
   const last = data[data.length - 1] || { cpu: 0, memory_mb: 0 };

@@ -1,15 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { 
   Cpu, HardDrive, Network, Box, Shield, Zap, 
-  FileText, Folder, RefreshCw, X, Layers,  CheckCircle, 
-  Globe, Server, MessageSquare, Lock, Terminal
+  FileText, Folder, RefreshCw, X, Layers, CheckCircle, 
+  Globe, Server, MessageSquare, Lock, Terminal, 
+  Settings, Save, Plus, Trash2, Loader2
 } from "lucide-react";
 import { 
   AreaChart, Area, ResponsiveContainer, YAxis, 
   Tooltip, CartesianGrid, ReferenceLine 
 } from 'recharts';
-import { listen } from "@tauri-apps/api/event";
 
 const InfoChip = ({ icon: Icon, label, value, color = "text-zinc-400" }: any) => (
   <div className="bg-zinc-950/50 border border-zinc-800 p-3 rounded-lg flex items-center justify-between">
@@ -21,72 +22,120 @@ const InfoChip = ({ icon: Icon, label, value, color = "text-zinc-400" }: any) =>
   </div>
 );
 
-export function Inspector({ id, onClose }: { id: string | null, onClose: () => void }) {
+interface InspectorProps {
+    id: string | null;
+    onClose: () => void;
+    onIdChange: (newId: string) => void;
+}
+
+export function Inspector({ id, onClose, onIdChange }: InspectorProps) {
+  // Estados de datos
   const [details, setDetails] = useState<any>(null);
   const [stats, setStats] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState("overview");
-  const [isStressing, setIsStressing] = useState(false);
   const [audit, setAudit] = useState<any>(null);
   const [namespaceData, setNamespaceData] = useState<any>(null);
   const [files, setFiles] = useState<string[]>([]);
+  
+  // Estados de UI
+  const [activeTab, setActiveTab] = useState("overview");
+  const [isStressing, setIsStressing] = useState(false);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  
+  // Estados de Configuración (Env Vars)
+  const [editingEnv, setEditingEnv] = useState<{key: string, value: string}[]>([]);
+  const [isSavingEnv, setIsSavingEnv] = useState(false);
+  // FIX INPUTS: Usamos esto para saber si ya cargamos las variables la primera vez
+  const envLoadedRef = useRef(false);
+
+  // Estados de Terminal
   const [terminalPort, setTerminalPort] = useState<number | null>(null);
   const [openingTerminal, setOpeningTerminal] = useState(false);
 
+  // ---------------------------------------------------------------------------
+  // EFECTO PRINCIPAL: CARGA Y POLLING OPTIMIZADO
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!id) return;
+
+    // 1. Limpieza inicial
     setStats([]);
     setDetails(null);
     setAudit(null);
     setNamespaceData(null);
     setFiles([]);
+    envLoadedRef.current = false; // Resetear flag de carga de envs
     
-    // Iniciar monitor de gráficas (Stream)
+    // Iniciar monitor de gráficas
     invoke("start_monitor", { containerId: id }).catch(console.error);
 
-    // 2. Función para cargar datos estáticos (Polling)
-    const fetchData = async () => {
+    // 2. Carga PESADA (Solo una vez al abrir o cambiar ID)
+    // Esto evita el uso excesivo de CPU (las olas de 11%)
+    const loadHeavyData = async () => {
         try {
-            // Siempre intentamos obtener los detalles básicos (Estado, IP, etc)
-            const detailsData = await invoke<any>("get_container_details", { id });
-            setDetails(detailsData);
+            // Obtenemos detalles para la primera carga
+            const data = await invoke<any>("get_container_details", { id });
+            setDetails(data);
+            
+            // Cargar Env Vars en el formulario solo esta vez
+            if (data.env) {
+                const parsed = data.env.map((s: string) => {
+                    const parts = s.split('=');
+                    return { key: parts[0], value: parts.slice(1).join('=') };
+                });
+                setEditingEnv(parsed);
+                envLoadedRef.current = true; // Marcamos como cargado
+            }
 
-            // Solo intentamos obtener datos profundos si el contenedor parece estar corriendo
-            // o lo intentamos y capturamos el error si está apagado
-            if (detailsData.state === 'running') {
+            // Auditoría y Namespaces (Costoso en CPU, solo 1 vez)
+            if (data.state === 'running') {
                 invoke("audit_container", { id }).then(setAudit).catch(() => setAudit(null));
                 invoke("get_namespace_data", { id }).then(setNamespaceData).catch(() => setNamespaceData(null));
-            } else {
-                // Si está apagado, limpiamos estos datos visuales
-                setNamespaceData(null);
             }
-        } catch (error) {
-            console.error("Error polling container:", error);
+        } catch (e) {
+            console.error(e);
         }
     };
+    
+    // 3. Carga LIGERA (Polling cada 2s)
+    // Solo verifica el estado "Running/Exited" usando inspect (muy barato en CPU)
+    const pollStatus = async () => {
+        try {
+            const data = await invoke<any>("get_container_details", { id });
+            // Solo actualizamos 'details' para cambiar el estado visual
+            // NO actualizamos editingEnv aquí para no borrar lo que escribes
+            setDetails((prev: any) => {
+                // Truco para evitar re-renderizados innecesarios si nada cambia
+                if (prev && prev.state === data.state && prev.name === data.name) return prev;
+                return data;
+            });
+        } catch (e) { console.error(e); }
+    };
 
-    // Llamada inicial inmediata
-    fetchData();
-    // Llamada inicial a archivos
-    invoke<string[]>("list_container_files", { id, path: "/app/logs" })
-      .then(setFiles)
-      .catch(() => {});
+    // Ejecutar carga pesada
+    loadHeavyData();
+    // Ejecutar carga de archivos
+    fetchFiles(id);
 
-    // 3. Intervalo de actualización (Cada 2 segundos)
-    const intervalId = setInterval(fetchData, 2000);
+    // Configurar intervalo ligero
+    const intervalId = setInterval(pollStatus, 2000);
 
-    // 4. Configurar el listener de eventos (Gráficas)
+    // Listener de eventos para gráficas
     const unlistenPromise = listen(`monitor-stats-${id}`, (e: any) => {
-      setStats(prev => [...prev, e.payload].slice(-40));
+      setStats(prev => [...prev, e.payload].slice(-20));
     });
 
-    // 5. Cleanup al desmontar o cambiar ID
     return () => { 
         clearInterval(intervalId);
         unlistenPromise.then(f => f()); 
+
+        invoke("stop_monitor", { containerId: id }).catch(console.error);
     };
   }, [id]);
 
+  // ---------------------------------------------------------------------------
+  // ACCIONES
+  // ---------------------------------------------------------------------------
+  
   const handleStress = async () => {
     if (!id) return;
     setIsStressing(true);
@@ -99,24 +148,18 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
     }
   };
 
-  const fetchFiles = async () => {
-    if (!id) return;
+  const fetchFiles = async (targetId = id) => {
+    if (!targetId) return;
     setLoadingFiles(true);
     try {
-      const data = await invoke<string[]>("list_container_files", { id, path: "/app/logs" });
+      const data = await invoke<string[]>("list_container_files", { id: targetId, path: "/app/logs" });
       setFiles(data);
     } catch (e) {
-      console.error(e);
+      setFiles([]);
     } finally {
       setLoadingFiles(false);
     }
   };
-
-  if (!id) return null;
-  if (!details) return <div className="p-10 text-zinc-500">Cargando inspección...</div>;
-
-  const memoryLimitMB = details.memory_limit_bytes > 0 ? details.memory_limit_bytes / 1024 / 1024 : 0;
-  const cpuLimitPercent = details.cpu_limit_nano > 0 ? (details.cpu_limit_nano / 1_000_000_000) * 100 : 100;
 
   const handleOpenTerminal = async () => {
       if (!id) return;
@@ -133,12 +176,44 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
   };
 
   const handleCloseTerminal = async () => {
-      setTerminalPort(null); // Ocultar UI inmediatamente
-      if (id) {
-          // Matar el proceso en Rust
-          await invoke("close_dashboard_terminal", { id });
+    setTerminalPort(null);
+    if (id) {
+        await invoke("close_dashboard_terminal", { id });
+    }
+  };
+
+  const handleUpdateEnv = async () => {
+      if (!id) return;
+      setIsSavingEnv(true);
+      const newEnvVec = editingEnv
+        .filter(e => e.key.trim() !== "")
+        .map(e => `${e.key.trim()}=${e.value}`);
+      
+      try {
+          const newId = await invoke<string>("update_container_env", { id, newEnv: newEnvVec });
+          onIdChange(newId);
+          alert("Contenedor actualizado y reiniciado correctamente.");
+      } catch (e) {
+          alert("Error actualizando: " + e);
+      } finally {
+          setIsSavingEnv(false);
       }
   };
+
+  // Helpers de formulario Env
+  const addEnvLine = () => setEditingEnv([...editingEnv, { key: "", value: "" }]);
+  const removeEnvLine = (idx: number) => setEditingEnv(editingEnv.filter((_, i) => i !== idx));
+  const updateEnvLine = (idx: number, field: 'key'|'value', val: string) => {
+      const copy = [...editingEnv];
+      copy[idx][field] = val;
+      setEditingEnv(copy);
+  };
+
+  if (!id) return null;
+  if (!details) return <div className="p-10 text-zinc-500 flex items-center gap-2"><Loader2 className="animate-spin"/> Cargando inspección...</div>;
+
+  const memoryLimitMB = details.memory_limit_bytes > 0 ? details.memory_limit_bytes / 1024 / 1024 : 0;
+  const cpuLimitPercent = details.cpu_limit_nano > 0 ? (details.cpu_limit_nano / 1_000_000_000) * 100 : 100;
 
   return (
     <div className="h-full flex flex-col bg-zinc-900/80 rounded-2xl border border-zinc-800 backdrop-blur-xl shadow-2xl relative">
@@ -148,12 +223,13 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
       <div className="p-6 border-b border-zinc-800 bg-zinc-950/50 pr-14">
         <h2 className="text-2xl font-bold text-white flex items-center gap-3">
           {details.name}
-          <span className={`text-xs px-2 py-0.5 rounded-full border ${details.state === 'running' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400'}`}>
+          <span className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 ${details.state === 'running' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400'}`}>
+            {details.state === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>}
             {details.state.toUpperCase()}
           </span>
         </h2>
         <div className="flex gap-6 mt-6">
-          {['overview', 'cgroups', 'namespaces', 'storage'].map(tab => (
+          {['overview', 'config', 'cgroups', 'namespaces', 'storage'].map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -176,12 +252,32 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                <InfoChip icon={Cpu} label="CPU Limit" value={details.cpu_limit_nano > 0 ? `${details.cpu_limit_nano / 1e9} Cores` : "∞"} />
                <InfoChip icon={HardDrive} label="RAM Limit" value={memoryLimitMB > 0 ? `${memoryLimitMB.toFixed(0)} MB` : "∞"} />
             </div>
+            
+            <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
+                <h3 className="text-sm font-bold text-zinc-300 mb-3 flex items-center gap-2">
+                    <Globe size={16}/> Puertos Expuestos
+                </h3>
+                {details.ports && details.ports.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                        {details.ports.map((p: string, i: number) => (
+                            <span key={i} className="px-3 py-1 bg-blue-900/20 text-blue-400 border border-blue-500/20 rounded text-mono text-sm font-bold">
+                                {p}
+                            </span>
+                        ))}
+                    </div>
+                ) : (
+                    <p className="text-zinc-500 text-xs italic">No hay puertos mapeados al host.</p>
+                )}
+            </div>
+
             <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
                <h3 className="text-sm font-bold text-zinc-300 mb-3 flex items-center gap-2"><Shield size={16}/> Configuración de Seguridad</h3>
                <div className="flex gap-4">
                   <div className={`flex-1 p-3 rounded border ${audit?.fs_readonly ? "bg-emerald-900/20 border-emerald-800" : "bg-red-900/20 border-red-800"}`}>
                     <span className="text-xs text-zinc-400">Read-Only RootFS</span>
-                    <p className={`font-bold ${audit?.fs_readonly ? "text-emerald-400" : "text-red-400"}`}>{audit?.fs_readonly ? "ACTIVADO" : "DESACTIVADO"}</p>
+                    <p className={`font-bold ${audit ? (audit.fs_readonly ? "text-emerald-400" : "text-red-400") : "text-zinc-500"}`}>
+                       {audit ? (audit.fs_readonly ? "ACTIVADO" : "DESACTIVADO") : "..."}
+                    </p>
                   </div>
                   <div className={`flex-1 p-3 rounded border ${details.cpu_limit_nano > 0 ? "bg-emerald-900/20 border-emerald-800" : "bg-yellow-900/20 border-yellow-800"}`}>
                     <span className="text-xs text-zinc-400">CPU CGroup</span>
@@ -192,14 +288,61 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
           </div>
         )}
 
+        {/* --- CONFIG (ENV VARS) --- */}
+        {activeTab === 'config' && (
+            <div className="space-y-4 animate-in fade-in">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-zinc-300 flex gap-2"><Settings size={16}/> Variables de Entorno</h3>
+                    <button onClick={addEnvLine} className="text-xs bg-zinc-800 px-2 py-1 rounded hover:bg-zinc-700 flex gap-1 items-center border border-zinc-700 transition">
+                        <Plus size={12}/> Añadir
+                    </button>
+                </div>
+                
+                <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-2 max-h-96 overflow-y-auto custom-scrollbar">
+                    {editingEnv.map((env, i) => (
+                        <div key={i} className="flex gap-2 group">
+                            <input 
+                              value={env.key} 
+                              onChange={(e)=>updateEnvLine(i, 'key', e.target.value)}
+                              className="bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-blue-300 w-1/3 focus:border-blue-500 outline-none" 
+                              placeholder="CLAVE"
+                            />
+                            <div className="flex items-center text-zinc-600">=</div>
+                            <input 
+                              value={env.value} 
+                              onChange={(e)=>updateEnvLine(i, 'value', e.target.value)}
+                              className="bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-zinc-300 flex-1 focus:border-blue-500 outline-none" 
+                              placeholder="VALOR"
+                            />
+                            <button onClick={() => removeEnvLine(i)} className="p-2 text-zinc-600 hover:text-red-400 hover:bg-red-900/10 rounded transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={14}/></button>
+                        </div>
+                    ))}
+                    {editingEnv.length === 0 && <p className="text-center text-xs text-zinc-600 py-4">No hay variables definidas.</p>}
+                </div>
+
+                <div className="bg-yellow-900/10 border border-yellow-900/30 p-3 rounded-lg text-xs text-yellow-500 flex gap-3 items-start">
+                    <Zap size={16} className="shrink-0 mt-0.5" />
+                    <p>Al guardar cambios, el contenedor será <b>eliminado y recreado</b>. Se mantendrán los volúmenes montados, pero se perderán los datos en la capa efímera del contenedor.</p>
+                </div>
+
+                <button 
+                  onClick={handleUpdateEnv} 
+                  disabled={isSavingEnv}
+                  className={`w-full py-3 rounded-lg font-bold text-sm flex justify-center items-center gap-2 transition-all ${isSavingEnv ? "bg-zinc-800 text-zinc-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white shadow-lg"}`}
+                >
+                    {isSavingEnv ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>}
+                    {isSavingEnv ? "Reconstruyendo Contenedor..." : "Aplicar Cambios y Reiniciar"}
+                </button>
+            </div>
+        )}
+
         {/* --- CGROUPS --- */}
         {activeTab === 'cgroups' && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
              <div className="bg-blue-600/10 border border-blue-500/20 p-4 rounded-xl">
-                <h3 className="text-blue-400 font-bold text-sm mb-1 flex gap-2"><Layers size={16}/> Demostración de Control de Recursos (CGroups)</h3>
+                <h3 className="text-blue-400 font-bold text-sm mb-1 flex gap-2"><Layers size={16}/> Monitor de Recursos</h3>
                 <p className="text-xs text-zinc-300">
-                  Al pulsar "Inyectar Estrés", el contenedor intentará usar el 100% de la CPU y 2GB de RAM. 
-                  Si los CGroups funcionan, las gráficas <b>chocarán contra la línea roja</b> y no la superarán.
+                  Visualiza cómo los <b>CGroups</b> del Kernel limitan el consumo. Usa el botón de estrés para intentar romper el límite.
                 </p>
              </div>
              <div className="flex justify-end">
@@ -246,36 +389,33 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
           </div>
         )}
 
-        {/* --- NAMESPACES (AISLAMIENTO COMPLETO) --- */}
-{activeTab === 'namespaces' && (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
-        {/* ... (Tarjeta de título y explicación existente) ... */}
-        
-        <div className="bg-purple-600/10 border border-purple-500/20 p-4 rounded-xl">
-             {/* ... Títulos anteriores ... */}
-             
-             <div className="flex flex-wrap gap-3 mt-4">
-                {/* BOTÓN WEB (Existente) */}
-                <a href="http://localhost:8080" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-blue-600/20">
-                   <Globe size={14} /> ABRIR WEB (Server)
-                </a>
-
-                {/* BOTÓN TERMINAL (NUEVO) */}
-                <button 
-                    onClick={handleOpenTerminal}
-                    disabled={openingTerminal}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded-lg transition border border-zinc-600"
-                >
-                   <Terminal size={14} /> 
-                   {openingTerminal ? "Conectando..." : "ABRIR SHELL (TTY)"}
-                </button>
-             </div>
-        </div>
+        {/* --- NAMESPACES --- */}
+        {activeTab === 'namespaces' && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
+                <div className="bg-purple-600/10 border border-purple-500/20 p-4 rounded-xl flex justify-between items-center">
+                     <div>
+                        <h3 className="text-purple-400 font-bold text-sm mb-1 flex gap-2"><Layers size={16}/> Aislamiento (Namespaces)</h3>
+                        <p className="text-xs text-zinc-300">
+                            Verifica que el contenedor tiene su propia identidad (PID, UTS, Red).
+                        </p>
+                     </div>
+                     <div className="flex gap-3">
+                        <a href="http://localhost:8080" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition shadow-lg shadow-blue-600/20">
+                           <Globe size={14} /> WEB INTERNA
+                        </a>
+                        <button 
+                            onClick={handleOpenTerminal}
+                            disabled={openingTerminal}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded-lg transition border border-zinc-600"
+                        >
+                           {openingTerminal ? <Loader2 size={14} className="animate-spin"/> : <Terminal size={14} />} 
+                           {openingTerminal ? "Conectando..." : "ABRIR SHELL"}
+                        </button>
+                     </div>
+                </div>
 
                 {namespaceData ? (
                     <div className="grid grid-cols-2 gap-4">
-                        
-                        {/* 1. PID Namespace */}
                         <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800 relative overflow-hidden group hover:border-blue-500/50 transition-colors">
                             <div className="flex items-center gap-2 mb-3 text-blue-400 font-bold text-sm">
                                 <Layers size={16} /> PID Namespace
@@ -288,12 +428,8 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                                 <span className="text-xs text-blue-300">Container PID</span>
                                 <span className="text-mono font-bold text-blue-200">{namespaceData.pid.container}</span>
                             </div>
-                            <p className="text-[10px] text-zinc-500 mt-2">
-                                El proceso cree ser el PID 1 (Init), ignorando los otros procesos del sistema.
-                            </p>
                         </div>
 
-                        {/* 2. UTS Namespace (Hostname) */}
                         <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800 relative overflow-hidden group hover:border-orange-500/50 transition-colors">
                             <div className="flex items-center gap-2 mb-3 text-orange-400 font-bold text-sm">
                                 <Server size={16} /> UTS Namespace
@@ -306,12 +442,8 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                                 <span className="text-xs text-orange-300">Cont. Name</span>
                                 <span className="text-mono font-bold text-orange-200 truncate max-w-[100px]">{namespaceData.uts.container}</span>
                             </div>
-                            <p className="text-[10px] text-zinc-500 mt-2">
-                                Identificadores de sistema (Hostname/Dominio) totalmente independientes.
-                            </p>
                         </div>
 
-                        {/* 3. Network Namespace */}
                         <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800 relative overflow-hidden group hover:border-emerald-500/50 transition-colors">
                             <div className="flex items-center gap-2 mb-3 text-emerald-400 font-bold text-sm">
                                 <Globe size={16} /> Network Namespace
@@ -323,12 +455,8 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                                     <p className="font-mono font-bold text-white">{namespaceData.network.container_ip}</p>
                                 </div>
                             </div>
-                            <p className="text-[10px] text-zinc-500 mt-2">
-                                Stack de red virtualizado (Interfaces, IP, Tablas de ruteo propias).
-                            </p>
                         </div>
 
-                        {/* 4. IPC & Mount (Information) */}
                         <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800 relative overflow-hidden group hover:border-pink-500/50 transition-colors">
                             <div className="flex items-center gap-2 mb-3 text-pink-400 font-bold text-sm">
                                 <Lock size={16} /> IPC & Mount
@@ -343,14 +471,14 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                                     <span>Puntos de montaje privados</span>
                                 </div>
                             </div>
-                            <p className="text-[10px] text-zinc-500 mt-3 border-t border-zinc-800 pt-2">
-                                Verificado implícitamente por el aislamiento de PID y Filesystem.
-                            </p>
                         </div>
-
                     </div>
                 ) : (
-                    <div className="text-center py-10 text-zinc-500">Analizando Namespaces del Kernel...</div>
+                    <div className="text-center py-10 text-zinc-500">
+                        {details.state === 'running' 
+                            ? (audit ? "Cargando..." : "Detalles cargados. Auditoría detenida.") 
+                            : "Contenedor Detenido"}
+                    </div>
                 )}
             </div>
         )}
@@ -364,7 +492,7 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                       <CheckCircle size={16}/> Carpeta Vinculada (Bind Mount)
                    </h4>
                    <p className="text-xs text-zinc-400 mb-2">
-                      La carpeta de tu PC está sincronizada con <b>/app/logs</b> dentro del contenedor.
+                      La carpeta del Host está sincronizada con <b>/app/logs</b> dentro del contenedor.
                    </p>
                    <div className="text-xs font-mono bg-black/30 p-2 rounded border border-emerald-500/10 text-zinc-300 break-all">
                       {details.binds.map((b: string) => b.split(':')[0]).join(', ')} 
@@ -372,26 +500,29 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                 </div>
               ) : (
                 <div className="bg-zinc-800/20 border border-zinc-800 p-4 rounded-xl text-center">
-                   <p className="text-xs text-zinc-500">No hay carpetas compartidas en este contenedor.</p>
+                   <p className="text-xs text-zinc-500">No hay volúmenes montados.</p>
                 </div>
               )}
+              
               <div className="bg-zinc-950 border border-zinc-800 rounded-xl overflow-hidden">
                 <div className="p-3 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
                     <span className="text-xs font-bold text-zinc-300 flex items-center gap-2">
-                        <Folder size={14} className="text-blue-400"/> /app/logs (Vista Interna)
+                        <Folder size={14} className="text-blue-400"/> 
+                        Explorador (/app/logs)
                     </span>
-                    <button onClick={fetchFiles} disabled={loadingFiles} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition">
+                    <button onClick={() => fetchFiles(id)} disabled={loadingFiles} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition">
                         <RefreshCw size={14} className={loadingFiles ? "animate-spin" : ""} />
                     </button>
                 </div>
-                <div className="max-h-60 overflow-y-auto p-2">
-                    {files.map((file, i) => (
-                        <div key={i} className="flex items-center gap-3 p-2 hover:bg-zinc-900 rounded cursor-default">
+                <div className="max-h-60 overflow-y-auto p-2 custom-scrollbar">
+                    {files.length > 0 ? files.map((file, i) => (
+                        <div key={i} className="flex items-center gap-3 p-2 hover:bg-zinc-900 rounded cursor-default border-b border-zinc-900 last:border-0">
                             <FileText size={14} className="text-zinc-600" />
                             <span className="text-sm text-zinc-300">{file}</span>
                         </div>
-                    ))}
-                    {files.length === 0 && <p className="text-center text-xs text-zinc-600 py-4">Carpeta vacía o sin leer</p>}
+                    )) : (
+                        <p className="text-center text-xs text-zinc-600 py-4">Carpeta vacía</p>
+                    )}
                 </div>
               </div>
            </div>
@@ -399,7 +530,7 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
 
       </div>
 
-      {/* --- MODAL DE TERMINAL (ESTO ES LO QUE FALTABA) --- */}
+      {/* --- MODAL DE TERMINAL --- */}
       {terminalPort && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-10">
             <div className="bg-zinc-900 w-full h-full max-w-5xl rounded-xl border border-zinc-700 shadow-2xl flex flex-col overflow-hidden">
@@ -408,6 +539,7 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                         <Terminal size={14} className="text-green-500" />
                         <span>root@{details?.name?.substring(0,12) || "container"}:/app#</span>
                     </div>
+                    {/* Botón X llama al cierre seguro (mata proceso zombi) */}
                     <button onClick={handleCloseTerminal} className="hover:text-white text-zinc-500 hover:bg-zinc-800 p-1 rounded transition">
                         <X size={18} />
                     </button>

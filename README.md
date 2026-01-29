@@ -1,143 +1,127 @@
-# DockerManager - Un Gestor de Contenedores con Tauri y Rust
+# DockerManager - Gestor de Contenedores Seguro con Tauri v2
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/MrTanuk/docker-manager/main/screenshot.png" alt="Captura de pantalla de DockerManager" width="800"/>
+  <img src="https://github.com/user-attachments/assets/f5f06b0b-7534-43f6-8a19-c3c43022940f" alt="Captura de pantalla de DockerManager" width="800"/>
 </div>
+
 <p align="center">
-  <em>Una aplicación de escritorio moderna para gestionar contenedores Docker, con un enfoque en el control de recursos (CGroups) y el aislamiento (Namespaces).</em>
+  <em>Una aplicación de escritorio moderna para gestionar contenedores Docker, con un enfoque en el control de recursos (CGroups), aislamiento (Namespaces) y seguridad.</em>
 </p>
+
 <p align="center">
-  <img alt="GitHub language count" src="https://img.shields.io/github/languages/count/MrTanuk/docker-manager?color=%23f34b7d">
-  <img alt="License" src="https://img.shields.io/github/license/MrTanuk/docker-manager?color=%234c1">
-  <img alt="Last commit" src="https://img.shields.io/github/last-commit/MrTanuk/docker-manager?color=%235c6bc0">
+  <img alt="Rust" src="https://img.shields.io/badge/Language-Rust-%2300599c?style=flat&logo=rust">
+  <img alt="React" src="https://img.shields.io/badge/Framework-React-%2361DAFB?style=flat&logo=react">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=flat">
+  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-orange?style=flat&logo=tauri">
 </p>
 
 ---
 
 ## ✨ Características Principales
 
--   **Gestión Visual:** Lista y visualiza todos tus contenedores (activos e inactivos) con acciones rápidas para iniciar, detener, reiniciar y eliminar.
--   **Creación Parametrizada:** Crea nuevos contenedores definiendo:
-    -   Imagen base de Docker.
-    -   **Límites de CPU y RAM** para controlar el consumo de recursos (CGroups).
-    -   Sistema de archivos de **solo lectura** para mayor seguridad.
-    -   **Montaje de volúmenes** (`bind mount`) para vincular carpetas locales con el contenedor.
--   **Inspector Detallado:**
-    -   **Monitoreo en Tiempo Real:** Gráficas que muestran el uso de CPU y RAM, respetando visualmente los límites configurados.
-    -   **Stress Testing:** Inyecta carga de CPU y RAM para verificar empíricamente que los límites de recursos funcionan.
-    -   **Explorador de Archivos:** Inspecciona los archivos dentro de los volúmenes montados en el contenedor.
+### 🚀 Gestión y Despliegue
+- **Creación Parametrizada:** Interfaz sencilla para configurar:
+  - **Límites de Hardware:** Define cuánta CPU y RAM (MB) puede usar el contenedor.
+  - **Seguridad (Read-Only FS):** Bloquea la escritura en el sistema de archivos del contenedor para evitar persistencia de malware.
+  - **Red (Networking):** Decide si exponer puertos al host o mantener el contenedor aislado en su propia red.
+  - **Variables de Entorno:** Inyecta secretos y configuraciones (`KEY=VALUE`) fácilmente.
+
+### 🔍 Inspector Profundo
+- **Monitor en Tiempo Real:** Gráficas de CPU y RAM que respetan visualmente los límites configurados (CGroups).
+- **Verificación de Aislamiento:** Visualiza los Namespaces (PID, UTS, Network) para confirmar que el contenedor es invisible para otros procesos.
+- **Explorador de Archivos:** Navega por los logs o archivos generados en los volúmenes montados sin entrar a la terminal.
+- **Terminal Web:** Acceso directo a una shell (`/bin/bash`) dentro del contenedor usando `ttyd`.
+
+### 🛡️ Pruebas de Estrés y Seguridad
+- **Stress Testing:** Inyecta carga sintética de CPU y Memoria para verificar que el Kernel mata o limita el proceso correctamente.
+- **Auditoría de FS:** Verifica si el sistema de archivos es realmente de solo lectura.
+
+---
+
+## 📖 Guía de Uso
+
+### 1. Crear un Nuevo Contenedor
+En la barra lateral izquierda encontrarás el panel de creación:
+1.  **Imagen Base:** Selecciona una imagen de Docker disponible en tu sistema local.
+2.  **Nombre:** Asigna un identificador único.
+3.  **Variables:** Añade claves/valores (ej. `DB_PASSWORD=secret`).
+4.  **Recursos:** Desliza los controles para limitar CPU (0.1 a 1 core) y RAM.
+5.  **Configuración Avanzada:**
+    - **FS Read-Only:** Actívalo para máxima seguridad (el contenedor no podrá guardar cambios).
+    - **Exponer Red:** Actívalo para mapear un puerto. Si lo desactivas, el contenedor estará aislado de la red externa.
+6.  Haz clic en **Desplegar**.
+
+### 2. Gestión de Ciclo de Vida
+En la lista "Deployments":
+- **Estado:** El punto verde/rojo indica si está `Running` o `Exited`.
+- **Acciones Rápidas:** Al pasar el mouse, verás botones para:
+  - ▶️ Iniciar
+  - ⏹️ Detener
+  - 🔄 Reiniciar
+  - 🗑️ Eliminar (Forzado)
+
+### 3. Inspector (Panel Derecho)
+Al seleccionar un contenedor, se abre el inspector con varias pestañas:
+- **Overview:** Resumen de IPs, puertos y estado de seguridad.
+- **Config:** Permite editar variables de entorno. **Nota:** Al guardar, el contenedor se recreará.
+- **Cgroups:** Gráficas de rendimiento. Usa el botón "Inyectar Carga" para probar los límites.
+- **Namespaces:** Compara los PIDs del Host vs Contenedor para visualizar el aislamiento.
+- **Storage:** Lista los archivos en la ruta de logs montada.
+
+---
 
 ## 🛠️ Tecnologías Utilizadas
 
--   **Framework:** Tauri (Rust + Node.js)
--   **Backend:** Rust
--   **Frontend:** React, TypeScript, Vite
--   **Estilos:** TailwindCSS
--   **Gráficas:** Recharts
--   **Interacción con Docker:** Crate de Rust `bollard`
+-   **Frontend:** React 19, TypeScript, TailwindCSS v4, Recharts.
+-   **Backend:** Rust, Tauri v2.
+-   **Docker Engine:** Comunicación directa vía `bollard` (Rust Docker Client).
+-   **Herramientas:** `stress-ng` (para pruebas de carga), `ttyd` (para la terminal web).
+
+---
 
 ## 📋 Prerrequisitos
 
-Antes de empezar, necesitas tener instalado lo siguiente en tu sistema.
-
 #### 1. Docker
-Asegúrate de que el demonio de Docker esté instalado y en ejecución.
+El demonio de Docker debe estar corriendo.
 
-- [Instrucciones de instalación de Docker](https://docs.docker.com/engine/install/)
+#### 2. ttyd (Para la terminal web)
+La aplicación usa `ttyd` para exponer la terminal del contenedor vía WebSocket.
+- **Ubuntu/Debian:** `sudo apt install ttyd`
+- **Arch:** `sudo pacman -S ttyd`
+- **Mac:** `brew install ttyd`
 
-#### 2. Dependencias del Sistema para Tauri
-Tauri requiere ciertas librerías de desarrollo para compilar.
-
+#### 3. Dependencias de Desarrollo (Solo para compilar)
 <details>
-<summary><strong>🔵 Ubuntu / Debian</strong></summary>
+<summary><strong>Ver librerías necesarias (Linux)</strong></summary>
 
 ```sh
 sudo apt-get update
-sudo apt-get install libwebkit2gtk-4.0-dev \
-    build-essential \
-    curl \
-    wget \
-    libssl-dev \
-    libgtk-3-dev \
-    libayatana-appindicator3-dev \
-    librsvg2-dev
+sudo apt-get install libwebkit2gtk-4.0-dev build-essential curl wget libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 </details>
 
-<details>
-<summary><strong>🔴 Fedora</strong></summary>
+---
 
-```sh
-sudo dnf check-update
-sudo dnf install webkit2gtk4.0-devel \
-    curl \
-    wget \
-    openssl-devel \
-    gtk3-devel \
-    libayatana-appindicator-devel \
-    librsvg2-devel
-sudo dnf groupinstall "C Development Tools and Libraries"
-```
-</details>
+## 🚀 Ejecución y Compilación
 
-<details>
-<summary><strong>Arch Linux</strong></summary>
-
-```sh
-sudo pacman -Syu
-sudo pacman -S webkit2gtk \
-    base-devel \
-    curl \
-    wget \
-    openssl \
-    appmenu-gtk-module \
-    gtk3 \
-    libappindicator-gtk3 \
-    librsvg
-```
-</details>
-
-#### 3. Node.js y Rust
--   **Node.js** (se recomienda usar `nvm` para gestionarlo):
-    ```sh
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
-    nvm install --lts
-    ```
--   **Rust:**
-    ```sh
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-    ```
-
-## 🚀 Cómo Ejecutar en Desarrollo
-
-1.  **Clona el repositorio:**
-    ```sh
-    git clone https://github.com/MrTanuk/docker-manager.git
-    cd docker-manager
-    ```
-
-2.  **Instala las dependencias de Node.js:**
+1.  **Instalar dependencias JS:**
     ```sh
     npm install
     ```
 
-3.  **Ejecuta la aplicación en modo de desarrollo:**
-    La primera vez, tardará un poco mientras descarga y compila las dependencias de Rust.
+2.  **Modo Desarrollo:**
     ```sh
     npm run tauri dev
     ```
 
-## 📦 Compilar el Binario Final
+3.  **Compilar para Producción:**
+    ```sh
+    npm run tauri build
+    ```
+    El binario final estará en `src-tauri/target/release/bundle/`.
 
-Para generar el ejecutable instalable para tu sistema operativo, ejecuta el siguiente comando:
-
-```sh
-npm run tauri build
-```
-
-Una vez finalizado, encontrarás el binario (`.AppImage`, `.deb`, etc.) en la carpeta:
-`src-tauri/target/release/bundle/`
+---
 
 ## 📄 Licencia
 
-Este proyecto está bajo la Licencia MIT. Consulta el archivo `LICENSE` para más detalles.
+Este proyecto está bajo la Licencia MIT.
