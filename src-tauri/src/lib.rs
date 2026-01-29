@@ -10,7 +10,10 @@ use bollard::Docker;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
+use tauri::{State};
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::process::Child;
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
 
@@ -70,6 +73,11 @@ struct ContainerDetails {
     memory_limit_bytes: i64,
     // Storage
     binds: Vec<String>,
+}
+
+#[derive(Debug)]
+struct TerminalState {
+    processes: Mutex<HashMap<String, Child>>,
 }
 
 // --- CONEXIÓN A DOCKER ---
@@ -395,14 +403,21 @@ async fn start_monitor(app: AppHandle, container_id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-async fn open_dashboard_terminal(id: String) -> Result<u16, String> {
+async fn open_dashboard_terminal(
+    state: State<'_, TerminalState>, 
+    id: String
+    ) -> Result<u16, String> {
+
+    close_dashboard_terminal(state.clone(), id.clone()).await?;
+
     let port = {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         listener.local_addr().map_err(|e| e.to_string())?.port()
     }; 
 
-    Command::new("ttyd")
+    let child = Command::new("ttyd")
         .args(&[
+            "-i", "127.0.0.1",
             "-p", &port.to_string(),
             "-W", 
             "docker", "exec", "-it", &id, "/bin/bash"
@@ -412,15 +427,35 @@ async fn open_dashboard_terminal(id: String) -> Result<u16, String> {
         .spawn()
         .map_err(|_| "Error al iniciar ttyd. ¿Tienes 'ttyd' instalado en tu PC?".to_string())?;
 
+    state.processes.lock().map_err(|_| "Lock error")?.insert(id, child);
+
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     Ok(port)
 }
 
+#[tauri::command]
+async fn close_dashboard_terminal(
+    state: State<'_, TerminalState>, 
+    id: String
+) -> Result<(), String> {
+    let mut processes = state.processes.lock().map_err(|_| "Lock error")?;
+    
+    if let Some(mut child) = processes.remove(&id) {
+        // Intentamos matar el proceso suavemente, si no, a la fuerza
+        let _ = child.kill(); 
+        // Esperamos a que el SO limpie el recurso
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init()).manage(TerminalState {
+            processes: Mutex::new(HashMap::new()) 
+        })
         .invoke_handler(tauri::generate_handler![
             get_containers, 
             get_images, 
@@ -433,6 +468,7 @@ pub fn run() {
             list_container_files,
             get_namespace_data,
             open_dashboard_terminal,
+            close_dashboard_terminal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

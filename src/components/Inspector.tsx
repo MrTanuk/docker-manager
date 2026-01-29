@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { 
   Cpu, HardDrive, Network, Box, Shield, Zap, 
-  FileText, Folder, RefreshCw, X, Layers, ArrowRightLeft, CheckCircle, 
+  FileText, Folder, RefreshCw, X, Layers,  CheckCircle, 
   Globe, Server, MessageSquare, Lock, Terminal
 } from "lucide-react";
 import { 
@@ -41,16 +41,50 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
     setNamespaceData(null);
     setFiles([]);
     
-    invoke("get_container_details", { id }).then(setDetails).catch(console.error);
-    invoke("audit_container", { id }).then(setAudit).catch(console.error);
-    invoke("get_namespace_data", { id }).then(setNamespaceData).catch(console.error);
+    // Iniciar monitor de gráficas (Stream)
     invoke("start_monitor", { containerId: id }).catch(console.error);
 
-    const unlisten = listen(`monitor-stats-${id}`, (e: any) => {
+    // 2. Función para cargar datos estáticos (Polling)
+    const fetchData = async () => {
+        try {
+            // Siempre intentamos obtener los detalles básicos (Estado, IP, etc)
+            const detailsData = await invoke<any>("get_container_details", { id });
+            setDetails(detailsData);
+
+            // Solo intentamos obtener datos profundos si el contenedor parece estar corriendo
+            // o lo intentamos y capturamos el error si está apagado
+            if (detailsData.state === 'running') {
+                invoke("audit_container", { id }).then(setAudit).catch(() => setAudit(null));
+                invoke("get_namespace_data", { id }).then(setNamespaceData).catch(() => setNamespaceData(null));
+            } else {
+                // Si está apagado, limpiamos estos datos visuales
+                setNamespaceData(null);
+            }
+        } catch (error) {
+            console.error("Error polling container:", error);
+        }
+    };
+
+    // Llamada inicial inmediata
+    fetchData();
+    // Llamada inicial a archivos
+    invoke<string[]>("list_container_files", { id, path: "/app/logs" })
+      .then(setFiles)
+      .catch(() => {});
+
+    // 3. Intervalo de actualización (Cada 2 segundos)
+    const intervalId = setInterval(fetchData, 2000);
+
+    // 4. Configurar el listener de eventos (Gráficas)
+    const unlistenPromise = listen(`monitor-stats-${id}`, (e: any) => {
       setStats(prev => [...prev, e.payload].slice(-40));
     });
 
-    return () => { unlisten.then(f => f()); };
+    // 5. Cleanup al desmontar o cambiar ID
+    return () => { 
+        clearInterval(intervalId);
+        unlistenPromise.then(f => f()); 
+    };
   }, [id]);
 
   const handleStress = async () => {
@@ -95,6 +129,14 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
           alert("Error: " + error);
       } finally {
           setOpeningTerminal(false);
+      }
+  };
+
+  const handleCloseTerminal = async () => {
+      setTerminalPort(null); // Ocultar UI inmediatamente
+      if (id) {
+          // Matar el proceso en Rust
+          await invoke("close_dashboard_terminal", { id });
       }
   };
 
@@ -366,7 +408,7 @@ export function Inspector({ id, onClose }: { id: string | null, onClose: () => v
                         <Terminal size={14} className="text-green-500" />
                         <span>root@{details?.name?.substring(0,12) || "container"}:/app#</span>
                     </div>
-                    <button onClick={() => setTerminalPort(null)} className="hover:text-white text-zinc-500 hover:bg-zinc-800 p-1 rounded transition">
+                    <button onClick={handleCloseTerminal} className="hover:text-white text-zinc-500 hover:bg-zinc-800 p-1 rounded transition">
                         <X size={18} />
                     </button>
                 </div>

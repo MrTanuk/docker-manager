@@ -7,6 +7,7 @@ import {
   Trash2,
   ChevronRight,
   Box,
+  Loader2,
 } from "lucide-react";
 
 interface ContainerListProps {
@@ -21,6 +22,7 @@ export function ContainerList({
   selectedId,
 }: ContainerListProps) {
   const [containers, setContainers] = useState<any[]>([]);
+  const [processing, setProcessing] = useState<{id: string, action: string} | null>(null);
 
   const fetchContainers = async () => {
     try {
@@ -42,12 +44,17 @@ export function ContainerList({
     id: string,
     action: string,
   ) => {
-    e.stopPropagation(); // Evitar seleccionar al hacer click en acciones
+    e.stopPropagation();
+    
+    setProcessing({ id, action });
+
     try {
       await invoke("perform_action", { id, action });
-      fetchContainers();
+      await fetchContainers(); // Esperamos a que refresque la lista
     } catch (err) {
       console.error(err);
+    } finally {
+      setProcessing(null);
     }
   };
 
@@ -64,6 +71,13 @@ export function ContainerList({
     <div className="space-y-1">
       {containers.map((c) => {
         const isSelected = selectedId === c.id;
+        // Helper para saber si ESTE botón específico está cargando
+        const isActionLoading = (action: string) => 
+            processing?.id === c.id && processing?.action === action;
+
+        // Si hay CUALQUIER acción en curso en este contenedor, bloqueamos los otros botones
+        const isBusy = processing?.id === c.id;
+
         return (
           <div
             key={c.id}
@@ -98,25 +112,25 @@ export function ContainerList({
               </div>
             </div>
 
-            {/* Acciones Rápidas (Solo aparecen al hacer hover o si está seleccionado) */}
+            {/* Acciones Rápidas */}
             <div
-              className={`flex items-center gap-1 ${isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`}
+              className={`flex items-center gap-1 ${isSelected || isBusy ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`}
             >
               {c.status === "running" ? (
                 <>
-                  {/* --- CORRECCIÓN AQUÍ --- */}
                   <SmallButton
-                    onClick={(e: React.MouseEvent) =>
-                      handleAction(e, c.id, "restart")
-                    }
+                    onClick={(e: React.MouseEvent) => handleAction(e, c.id, "restart")}
+                    // 5. LÓGICA DE ICONO Y CARGA
+                    isLoading={isActionLoading("restart")}
+                    isDisabled={isBusy} 
                     icon={<RotateCw size={14} />}
                     color="text-yellow-400 hover:bg-yellow-400/10"
                     title="Reiniciar"
                   />
                   <SmallButton
-                    onClick={(e: React.MouseEvent) =>
-                      handleAction(e, c.id, "stop")
-                    }
+                    onClick={(e: React.MouseEvent) => handleAction(e, c.id, "stop")}
+                    isLoading={isActionLoading("stop")}
+                    isDisabled={isBusy}
                     icon={<Square size={14} />}
                     color="text-red-400 hover:bg-red-400/10"
                     title="Detener"
@@ -124,29 +138,32 @@ export function ContainerList({
                 </>
               ) : (
                 <>
-                  {/* --- Y CORRECCIÓN AQUÍ --- */}
                   <SmallButton
-                    onClick={(e: React.MouseEvent) =>
-                      handleAction(e, c.id, "start")
-                    }
+                    onClick={(e: React.MouseEvent) => handleAction(e, c.id, "start")}
+                    isLoading={isActionLoading("start")}
+                    isDisabled={isBusy}
                     icon={<Play size={14} />}
                     color="text-emerald-400 hover:bg-emerald-400/10"
                     title="Iniciar"
                   />
                   <SmallButton
-                    onClick={(e: React.MouseEvent) =>
-                      handleAction(e, c.id, "delete")
-                    }
+                    onClick={(e: React.MouseEvent) => handleAction(e, c.id, "delete")}
+                    isLoading={isActionLoading("delete")}
+                    isDisabled={isBusy}
                     icon={<Trash2 size={14} />}
                     color="text-zinc-500 hover:text-red-400 hover:bg-red-400/10"
                     title="Eliminar"
                   />
                 </>
               )}
-              <ChevronRight
-                size={16}
-                className={`ml-1 ${isSelected ? "text-blue-500" : "text-zinc-600"}`}
-              />
+              
+              {/* Flecha de selección (ocultar si está ocupado para limpiar visualmente) */}
+              {!isBusy && (
+                  <ChevronRight
+                    size={16}
+                    className={`ml-1 ${isSelected ? "text-blue-500" : "text-zinc-600"}`}
+                  />
+              )}
             </div>
           </div>
         );
@@ -155,14 +172,20 @@ export function ContainerList({
   );
 }
 
-function SmallButton({ onClick, icon, color, title }: any) {
+// 6. COMPONENTE ACTUALIZADO
+function SmallButton({ onClick, icon, color, title, isLoading, isDisabled }: any) {
   return (
     <button
       onClick={onClick}
-      title={title}
-      className={`p-1.5 rounded-md transition-colors ${color}`}
+      disabled={isDisabled}
+      title={isLoading ? "Procesando..." : title}
+      className={`
+        p-1.5 rounded-md transition-all 
+        ${isDisabled && !isLoading ? "opacity-30 cursor-not-allowed" : color}
+        ${isLoading ? "bg-zinc-800 text-zinc-400 cursor-wait" : ""}
+      `}
     >
-      {icon}
+      {isLoading ? <Loader2 size={14} className="animate-spin" /> : icon}
     </button>
   );
 }
