@@ -37,6 +37,7 @@ struct CreateConfig {
     read_only_root: bool,
     host_log_path: Option<String>, 
     host_port: Option<String>,
+    env_vars: Option<Vec<String>>, 
 }
 
 #[derive(Serialize, Clone)]
@@ -209,6 +210,7 @@ async fn create_container(config: CreateConfig) -> Result<String, String> {
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
         tty: Some(true),
+        env: config.env_vars, 
         ..Default::default()
     };
 
