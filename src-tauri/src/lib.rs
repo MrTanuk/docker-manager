@@ -288,11 +288,23 @@ async fn perform_action(id: String, action: String) -> Result<(), String> {
 async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     let docker = connect_docker()?;
     
+    let inspect = docker.inspect_container(&id, None).await.map_err(|e| e.to_string())?;
+    let host_config = inspect.host_config.unwrap_or_default();
+    
+    let mem_limit_bytes = host_config.memory.unwrap_or(0);
+    
+    let target_mb = if mem_limit_bytes > 0 {
+        ((mem_limit_bytes as f64 * 0.90) / 1048576.0) as i64
+    } else {
+        512
+    };
+
     let cmd = vec![
         "stress-ng".to_string(),
         "--cpu".to_string(), "0".to_string(), 
-        "--vm".to_string(), "2".to_string(),
-        "--vm-bytes".to_string(), "90%".to_string(), 
+        "--vm".to_string(), "1".to_string(),
+        "--vm-bytes".to_string(), format!("{}M", target_mb),
+        "--temp-path".to_string(), "/dev/shm".to_string(),
         "--timeout".to_string(), format!("{}s", duration)
     ];
 
@@ -304,15 +316,9 @@ async fn inject_stress(id: String, duration: u64) -> Result<String, String> {
     };
     
     let exec = docker.create_exec(&id, cfg).await.map_err(|e| e.to_string())?;
+    docker.start_exec(&exec.id, Some(StartExecOptions { detach: true, ..Default::default() })).await.map_err(|e| e.to_string())?;
     
-    let start_opts = StartExecOptions {
-        detach: true,
-        ..Default::default()
-    };
-
-    docker.start_exec(&exec.id, Some(start_opts)).await.map_err(|e| e.to_string())?;
-    
-    Ok("Inyectando carga masiva con stress-ng...".to_string())
+    Ok(format!("Estresando el 90% del contenedor ({} MB)", target_mb))
 }
 
 #[tauri::command]
